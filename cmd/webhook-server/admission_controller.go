@@ -19,14 +19,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/ioutil"
+	"net/http"
+
 	"k8s.io/api/admission/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"log"
-	"net/http"
 )
 
 const (
@@ -61,18 +60,21 @@ func doServeAdmitFunc(w http.ResponseWriter, r *http.Request, admit admitFunc) (
 
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return nil, fmt.Errorf("invalid method %s, only POST requests are allowed", r.Method)
+		logger.Errorf("Invalid method %s, only POST requests are allowed", r.Method)
+		return nil, errors.New("Invalid http method")
 	}
 
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		return nil, fmt.Errorf("could not read request body: %v", err)
+		logger.Errorf("could not read request body: %v", err)
+		return nil, err
 	}
 
 	if contentType := r.Header.Get("Content-Type"); contentType != jsonContentType {
 		w.WriteHeader(http.StatusBadRequest)
-		return nil, fmt.Errorf("unsupported content type %s, only %s is supported", contentType, jsonContentType)
+		logger.Errorf("Unsupported content type %s, only %s is supported", contentType, jsonContentType)
+		return nil, errors.New("Unsupported content type")
 	}
 
 	// Step 2: Parse the AdmissionReview request.
@@ -81,10 +83,12 @@ func doServeAdmitFunc(w http.ResponseWriter, r *http.Request, admit admitFunc) (
 
 	if _, _, err := universalDeserializer.Decode(body, nil, &admissionReviewReq); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		return nil, fmt.Errorf("could not deserialize request: %v", err)
+		logger.Errorf("Could not deserialize request: %v", err)
+		return nil, err
 	} else if admissionReviewReq.Request == nil {
 		w.WriteHeader(http.StatusBadRequest)
-		return nil, errors.New("malformed admission review: request is nil")
+		logger.Error("Malformed admission review: request is nil")
+		return nil, errors.New("Malformed admission review: request is nil")
 	}
 
 	// Step 3: Construct the AdmissionReview response.
@@ -114,7 +118,8 @@ func doServeAdmitFunc(w http.ResponseWriter, r *http.Request, admit admitFunc) (
 		patchBytes, err := json.Marshal(patchOps)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			return nil, fmt.Errorf("could not marshal JSON patch: %v", err)
+			logger.Errorf("could not marshal JSON patch: %v", err)
+			return nil, err
 		}
 		admissionReviewResponse.Response.Allowed = true
 		admissionReviewResponse.Response.Patch = patchBytes
@@ -123,27 +128,28 @@ func doServeAdmitFunc(w http.ResponseWriter, r *http.Request, admit admitFunc) (
 	// Return the AdmissionReview with a response as JSON.
 	bytes, err := json.Marshal(&admissionReviewResponse)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling response: %v", err)
+		logger.Errorf("marshaling response: %v", err)
+		return nil, err
 	}
 	return bytes, nil
 }
 
 // serveAdmitFunc is a wrapper around doServeAdmitFunc that adds error handling and logging.
 func serveAdmitFunc(w http.ResponseWriter, r *http.Request, admit admitFunc) {
-	log.Print("Handling webhook request ...")
+	logger.Info("Handling webhook request ...")
 
 	var writeErr error
 	if bytes, err := doServeAdmitFunc(w, r, admit); err != nil {
-		log.Printf("Error handling webhook request: %v", err)
+		logger.Infof("Error handling webhook request: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, writeErr = w.Write([]byte(err.Error()))
 	} else {
-		log.Print("Webhook request handled successfully")
+		logger.Info("Webhook request handled successfully")
 		_, writeErr = w.Write(bytes)
 	}
 
 	if writeErr != nil {
-		log.Printf("Could not write response: %v", writeErr)
+		logger.Infof("Could not write response: %v", writeErr)
 	}
 }
 
